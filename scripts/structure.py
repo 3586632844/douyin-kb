@@ -48,8 +48,17 @@ def call_workers_ai(transcript, title, model, account, token):
     })
     with urllib.request.urlopen(req, timeout=120) as r:
         data = json.loads(r.read().decode("utf-8"))
-    resp = (data.get("result") or {}).get("response", "")
-    m = re.search(r"\{.*\}", resp, re.S)
+    # 兼容多种返回形态:
+    #  - 常见: result.response 是模型输出的 JSON 字符串
+    #  - 部分情况下 Cloudflare 已把模型 JSON 自动解析为 dict, 直接就是结构化对象
+    #  - 个别模型放在 result.content / result.text
+    result = data.get("result") or {}
+    raw = result.get("response") or result.get("content") or result.get("text")
+    if isinstance(raw, dict):
+        return raw  # 已经是结构化 JSON 对象, 直接返回
+    if not isinstance(raw, str):
+        raw = str(raw)
+    m = re.search(r"\{.*\}", raw, re.S)
     if not m:
         raise ValueError("AI 未返回 JSON")
     return json.loads(m.group(0))
