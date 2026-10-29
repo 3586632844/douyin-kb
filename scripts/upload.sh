@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# 1) 上传转写稿/总结/结构到 Cloudflare R2
-# 2) 把索引元数据写入 D1 (供按时间/主题浏览)
-# 需要环境变量:
-#   CF_ACCOUNT_ID, CLOUDFLARE_API_TOKEN  (wrangler 用, 需 D1:Edit 权限)
-#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  (R2 API 令牌, 在脚本内由 R2_KEY/R2_SECRET 注入)
+# 1) 上传 transcript/summary/structure 到 R2 (wrangler)
+# 2) 把索引写入 D1 (wrangler d1 execute)
+# 环境变量(由 process.yml 注入):
+#   CF_ACCOUNT_ID, CF_API_TOKEN  (wrangler 用，需 R2:Edit + D1:Edit 权限)
 #   R2_BUCKET, D1_NAME, VIDEO_URL
 set -euo pipefail
 
@@ -12,12 +11,19 @@ ID=$(date +%s)
 ACCT="${CF_ACCOUNT_ID:?缺少 CF_ACCOUNT_ID}"
 BUCKET="${R2_BUCKET:?缺少 R2_BUCKET}"
 DB="${D1_NAME:?缺少 D1_NAME}"
-EP="https://${ACCT}.r2.cloudflarestorage.com"
+
+# wrangler 读取的变量名与 job 传入的 CF_* 不同，这里统一映射
+export CLOUDFLARE_API_TOKEN="${CF_API_TOKEN:?缺少 CF_API_TOKEN}"
+export CLOUDFLARE_ACCOUNT_ID="$ACCT"
 
 echo "==> 上传到 R2 (id=$ID)"
-aws s3 cp "$WORK/transcript.txt"  "s3://$BUCKET/videos/$ID/transcript.txt"  --endpoint-url "$EP" --quiet
-aws s3 cp "$WORK/summary.md"      "s3://$BUCKET/videos/$ID/summary.md"      --endpoint-url "$EP" --quiet
-aws s3 cp "$WORK/structure.json"  "s3://$BUCKET/videos/$ID/structure.json"  --endpoint-url "$EP" --quiet
+for f in transcript.txt summary.md structure.json; do
+  if [ -f "$WORK/$f" ]; then
+    npx --yes wrangler r2 object put "$BUCKET/videos/$ID/$f" --file "$WORK/$f" --remote
+  else
+    echo "!! 跳过 $f (不存在)"
+  fi
+done
 
 echo "==> 生成 D1 插入语句"
 python3 - "$WORK" "$ID" "$VIDEO_URL" <<'PY'
@@ -38,6 +44,5 @@ print(sql[:240])
 PY
 
 echo "==> 写入 D1"
-CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" CF_ACCOUNT_ID="$ACCT" \
-  npx --yes wrangler d1 execute "$DB" --remote --file="$WORK/insert.sql"
+npx --yes wrangler d1 execute "$DB" --remote --file="$WORK/insert.sql"
 echo "==> 完成。R2 前缀: videos/$ID/"
