@@ -1,0 +1,65 @@
+name: Douyin Connectivity Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "抖音视频链接(可选，默认用之前测试过的那条)"
+        required: false
+        default: "https://v.douyin.com/PXtIBdR4V5E/"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest          # 注意：这是 GitHub 美国 Azure runner
+    timeout-minutes: 15
+    steps:
+      - name: "[1] 跟短链重定向 + 探测 iesdouyin 分享页"
+        id: probe
+        run: |
+          set -x
+          URL="${{ github.event.inputs.url }}"
+          UA="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+          echo "::group::短链重定向"
+          FINAL=$(curl -sIL -A "$UA" "$URL" | grep -i '^location:' | tail -n1 | tr -d '\r' | awk '{print $2}')
+          echo "FINAL_URL=$FINAL"
+          AID=$(echo "$FINAL" | grep -oE '[0-9]{15,}')
+          echo "AWEME_ID=$AID"
+          echo "::endgroup::"
+          echo "::group::iesdouyin 分享页探测"
+          HTTP=$(curl -s -o /tmp/share.html -w '%{http_code}' -A "$UA" "https://www.iesdouyin.com/share/video/${AID}/")
+          echo "SHARE_HTTP=$HTTP"
+          echo "SHARE_SIZE=$(wc -c < /tmp/share.html)"
+          ROUTER=$(grep -c '_ROUTER_DATA' /tmp/share.html || true)
+          echo "ROUTER_DATA_COUNT=$ROUTER"
+          head -c 400 /tmp/share.html
+          echo "::endgroup::"
+          if [ "$HTTP" = "200" ] && [ "${ROUTER:-0}" -gt 0 ]; then
+            echo "VERTICT=share_page_reachable" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERTICT=share_page_blocked" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "[2] 实战下载 (qgeng 开源下载器)"
+        continue-on-error: true
+        id: dl
+        run: |
+          set -x
+          pip install -q requests
+          git clone --depth 1 https://github.com/qgeng1465/douyin-watermark-free-downloader.git /tmp/dl
+          cd /tmp/dl
+          python3 douyin_dl.py "${{ github.event.inputs.url }}"
+          echo "::group::下载产物"
+          ls -la downloads/ 2>/dev/null || echo "NO_OUTPUT"
+          echo "::endgroup::"
+          if ls downloads/*.mp4 >/dev/null 2>&1; then
+            echo "RESULT=download_ok" >> "$GITHUB_OUTPUT"
+          else
+            echo "RESULT=download_fail" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "[3] 结论"
+        run: |
+          echo "=========================================="
+          echo "分享页探测 : ${{ steps.probe.outputs.VERTICT }}"
+          echo "实战下载   : ${{ steps.dl.outputs.RESULT || 'skipped_or_failed' }}"
+          echo "=========================================="
