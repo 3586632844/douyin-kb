@@ -19,25 +19,27 @@ if [ ! -d "$REPO_DIR/.git" ]; then
 fi
 
 cd "$REPO_DIR"
-# 不依赖退出码（下载器可能非零退出但仍产出文件），直接检查产物
 MP4=""
-for entry in douyin_dl.py douyin_downloader.py main.py; do
-  if [ -f "$entry" ]; then
-    python3 "$entry" "$URL" >/dev/null 2>&1 || true
-    MP4=$(find "$REPO_DIR" -path '*/downloads/*.mp4' 2>/dev/null | head -n1)
-    [ -n "$MP4" ] && break
-  fi
+# 抖音对美国 IP 可能偶发限流，重试 3 次自愈
+for attempt in 1 2 3; do
+  for entry in douyin_dl.py douyin_downloader.py main.py; do
+    if [ -f "$entry" ]; then
+      python3 "$entry" "$URL" >/dev/null 2>&1 || true
+      MP4=$(find "$REPO_DIR" -path '*/downloads/*.mp4' 2>/dev/null | head -n1)
+      [ -n "$MP4" ] && break 2
+    fi
+  done
+  if [ -n "$MP4" ]; then break; fi
+  echo "  第 ${attempt} 次尝试未产出文件，重试..."
+  sleep 3
 done
 
-# 兜底：任意 mp4（排除 .git）
 if [ -z "$MP4" ]; then
-  MP4=$(find "$REPO_DIR" -name '*.mp4' -not -path '*/.git/*' 2>/dev/null | head -n1)
-fi
-
-if [ -z "$MP4" ]; then
-  echo "!! 下载失败：可能是抖音对当前 IP 限流/风控。" >&2
-  echo "!! 调试 REPO_DIR 内容:" >&2
-  ls -la "$REPO_DIR" >&2 2>/dev/null || true
+  echo "!! 重试后仍失败，显示最后一次下载器输出:" >&2
+  for entry in douyin_dl.py douyin_downloader.py main.py; do
+    [ -f "$entry" ] && { python3 "$entry" "$URL" 2>&1 | tail -20 >&2; break; }
+  done
+  echo "!! 下载失败：可能是抖音对当前 IP 限流/风控，请稍后重试或更换下载方案。" >&2
   exit 1
 fi
 
