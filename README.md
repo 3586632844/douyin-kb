@@ -67,6 +67,11 @@ GitHub Actions (公开仓库 · 无限免费分钟 · 美国 runner)
 ### 3. 使用
 打开 Pages 网址 → 粘贴抖音链接 → 提交 → 约 2–3 分钟后出现在列表 → 点击查看大纲/摘要/全文。可用主题筛选、按时间排序。
 
+> **当前部署状态（2026-10-29 实测）**
+> - 前端已上线：**https://a4bafbe2.douyin-kb.pages.dev**
+> - 接口已验证：首页 `HTTP=200`；`/api/list` 正常返回 D1 索引；`/api/view?id=1793241036` 正常返回 R2 全文大纲+摘要。
+> - 端到端管线（`process.yml` + `deploy-pages.yml`）均 `conclusion=success`；Cloudflare 全权限令牌下自动部署前端已跑通（先前遇到的 `create_http=500` 为 Cloudflare 侧偶发错误，重试即 409→部署成功）。
+
 ## 数据模型（D1 索引）
 
 | 字段 | 说明 | 检索用途 |
