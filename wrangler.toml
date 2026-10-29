@@ -1,0 +1,14 @@
+name = "douyin-kb"
+pages_build_output_dir = "public"
+compatibility_date = "2024-09-01"
+
+# D1 数据库绑定（前端按时间/主题查询用）
+[[d1_databases]]
+binding = "DB"
+database_name = "douyin_kb"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+# R2 存储桶绑定（存放转写稿/总结/结构）
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "douyin-kb"
