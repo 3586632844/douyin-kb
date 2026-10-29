@@ -6,7 +6,7 @@ compatibility_date = "2024-09-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "douyin_kb"
-database_id = "REPLACE_WITH_YOUR_D1_ID"
+database_id = "af6af004-9729-455c-8180-e736560c67d3"
 
 # R2 存储桶绑定（存放转写稿/总结/结构）
 [[r2_buckets]]
