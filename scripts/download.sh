@@ -5,12 +5,13 @@ set -euo pipefail
 
 URL="$1"
 WORK="$2"
+# 转绝对路径，避免后续 cd 后相对路径失效
+WORK="$(cd "$(dirname "$WORK")" && pwd)/$(basename "$WORK")"
 REPO_DIR="$WORK/_dl"
 mkdir -p "$WORK" "$REPO_DIR"
 
 echo "==> 解析短链并下载视频: $URL"
 
-# 克隆已验证可用的开源下载器（固定到 main；如需可复现可改为具体 commit）
 if [ ! -d "$REPO_DIR/.git" ]; then
   git clone --depth 1 https://github.com/qgeng1465/douyin-watermark-free-downloader.git "$REPO_DIR" 2>/dev/null \
     || git clone --depth 1 https://github.com/3348249229/douyin-downloader.git "$REPO_DIR" 2>/dev/null \
@@ -26,11 +27,11 @@ for entry in douyin_dl.py douyin_downloader.py main.py; do
 done
 
 if [ "$DL_OK" -ne 1 ]; then
-  echo "!! 下载失败：可能是抖音对当前 IP 限流/风控。详见 README 的 geo-block 备选方案。" >&2
+  echo "!! 下载失败：可能是抖音对当前 IP 限流/风控。" >&2
   exit 1
 fi
 
-MP4=$(find . -name '*.mp4' -not -path '*/_*' | head -n1)
+MP4=$(find "$REPO_DIR" -name '*.mp4' -not -path '*/_*' | head -n1)
 [ -n "$MP4" ] || { echo "!! 未找到下载产物" >&2; exit 1; }
 
 cp "$MP4" "$WORK/video.mp4"
