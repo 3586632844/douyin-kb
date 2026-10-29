@@ -1,0 +1,66 @@
+name: Process Douyin Video
+
+on:
+  repository_dispatch:
+    types: [process]
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "抖音视频链接"
+        required: true
+
+concurrency:
+  group: dy-${{ github.run_id }}
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_ENDPOINT: https://hf-mirror.com
+      WHISPER_MODEL: small
+      WORKERS_AI_MODEL: ${{ secrets.WORKERS_AI_MODEL || '@cf/meta/llama-3.1-8b-instruct' }}
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache HF 模型
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ env.WHISPER_MODEL }}-v1
+
+      - name: 安装 ffmpeg
+        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
+
+      - name: 安装 Python 依赖
+        run: pip install -q faster-whisper requests
+
+      - name: 下载无水印视频
+        run: bash scripts/download.sh "${{ github.event.client_payload.url || inputs.url }}" work
+
+      - name: 抽取音频
+        run: ffmpeg -y -i work/video.mp4 -vn -ac 1 -ar 16000 -f wav work/audio.wav
+
+      - name: 语音转写 (faster-whisper int8)
+        run: python scripts/transcribe.py work/audio.wav work
+
+      - name: 结构化 (Workers AI 主题/大纲/摘要)
+        run: python scripts/structure.py work/transcript.txt work
+
+      - name: 上传到 R2 + 写入 D1
+        env:
+          R2_KEY: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          D1_NAME: ${{ secrets.D1_NAME }}
+          VIDEO_URL: ${{ github.event.client_payload.url || inputs.url }}
+        run: |
+          export AWS_ACCESS_KEY_ID="$R2_KEY"
+          export AWS_SECRET_ACCESS_KEY="$R2_SECRET"
+          bash scripts/upload.sh work
