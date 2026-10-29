@@ -12,3 +12,7 @@ database_id = "af6af004-9729-455c-8180-e736560c67d3"
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "douyin-kb"
+
+# Pages Functions 非机密环境变量（GH_TOKEN 为机密，用 `wrangler pages secret put` 注入）
+[vars]
+GH_REPO = "3586632844/douyin-kb"
