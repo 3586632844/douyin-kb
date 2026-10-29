@@ -16,6 +16,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 创建 Pages 项目（若不存在，用 Cloudflare REST API 避免交互）
+        run: |
+          curl -s -o /dev/null -w "create_http=%{http_code}\n" -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"douyin-kb","production_branch":"main"}' || true
+
       - name: 部署到 Cloudflare Pages
         run: npx --yes wrangler pages deploy public --project-name douyin-kb --commit-dirty
 
