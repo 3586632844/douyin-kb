@@ -1,0 +1,23 @@
+# 最小化连通性测试：验证 GitHub Actions 的【美国 runner】能否直连抖音
+# 用法：放到 .github/workflows/ 下，在 Actions 页面点 "Run workflow" 即可。
+# 看 Logs 里输出的 HTTP 状态码与 _ROUTER_DATA 是否存在。
+name: Douyin Connectivity Test (GitHub US)
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 出口 IP 与抖音分享页探测
+        run: |
+          UA="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+          echo "=== 本 runner 出口 IP ==="
+          curl -s --max-time 15 https://api.ipify.org; echo
+          echo "=== 解析短链 ==="
+          curl -sIL -A "$UA" "https://v.douyin.com/PXtIBdR4V5E/" | grep -i "^location:" | tail -1
+          echo "=== 直连 iesdouyin 分享页 ==="
+          curl -s -o /tmp/dy.html -w "HTTP=%{http_code}  final=%{url_effective}\n" --max-time 25 -A "$UA" "https://www.iesdouyin.com/share/video/7671311464384523505/"
+          echo "=== 页面是否含视频数据(_ROUTER_DATA) ==="
+          grep -c "_ROUTER_DATA" /tmp/dy.html
+          echo "=== 页面大小(bytes) ==="
+          wc -c < /tmp/dy.html
