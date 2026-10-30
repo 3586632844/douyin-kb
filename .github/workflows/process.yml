@@ -1,4 +1,4 @@
-name: Process Douyin (zsks-runner)
+name: Process zsks (runner)
 
 # 重活执行层：由 zsks 应用通过 repository_dispatch 触发，公开库跑无限免费 Actions
 on:
@@ -6,23 +6,35 @@ on:
     types: [process]
   workflow_dispatch:
     inputs:
+      platform:
+        description: "平台：douyin | bilibili | xiaohongshu"
+        required: true
+        default: douyin
+      content_type:
+        description: "内容类型：video | article"
+        required: true
+        default: video
       url:
-        description: "抖音视频链接"
+        description: "内容链接"
         required: true
 
 concurrency:
-  group: dy-${{ github.run_id }}
+  group: zsks-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   process:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       HF_ENDPOINT: https://hf-mirror.com
       WHISPER_MODEL: ${{ secrets.WHISPER_MODEL || 'small' }}
       INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
       WORKER_URL: ${{ secrets.WORKER_URL }}
       DOUYIN_COOKIE: ${{ secrets.DOUYIN_COOKIE }}
+      BILI_COOKIE: ${{ secrets.BILI_COOKIE }}
+      XHS_COOKIE: ${{ secrets.XHS_COOKIE }}
+      OCR_ENABLED: ${{ secrets.OCR_ENABLED || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,24 +42,29 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 安装 ffmpeg 与 faster-whisper（语音转写依赖）
+      - name: 安装系统依赖（ffmpeg）与 Python 依赖
         run: |
-          which ffmpeg || sudo apt-get update -y && sudo apt-get install -y ffmpeg
-          pip install --quiet faster-whisper
+          which ffmpeg || (sudo apt-get update -y && sudo apt-get install -y ffmpeg)
+          pip install --quiet yt-dlp faster-whisper trafilatura readability-lxml beautifulsoup4 lxml
 
       - name: 取 DeepSeek key（仅 job_id / 状态，不打印内容）
         id: cfg
         run: |
-          echo "job_id=${{ github.event.client_payload.job_id }}" >> "$GITHUB_OUTPUT"
-          echo "video_url=${{ github.event.client_payload.url }}" >> "$GITHUB_OUTPUT"
+          echo "job_id=${{ github.event.client_payload.job_id || github.run_id }}" >> "$GITHUB_OUTPUT"
+          echo "platform=${{ github.event.client_payload.platform || inputs.platform }}" >> "$GITHUB_OUTPUT"
+          echo "content_type=${{ github.event.client_payload.content_type || inputs.content_type || 'video' }}" >> "$GITHUB_OUTPUT"
+          echo "url=${{ github.event.client_payload.url || inputs.url }}" >> "$GITHUB_OUTPUT"
           RESP=$(curl -s -H "Authorization: Bearer $INGEST_TOKEN" "$WORKER_URL/api/internal/config?k=deepseek_api_key")
           KEY=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('value',''))")
           echo "::add-mask::$KEY"
           echo "deepseek_key=$KEY" >> "$GITHUB_OUTPUT"
 
-      - name: 运行消化脚本（解析→抓文案→下载→转写→结构化→回调共享库）
+      - name: 运行消化脚本（解析→抓文案/正文→下载/转写/OCR→结构化→回调共享库）
+        if: ${{ steps.cfg.outputs.url != '' }}
         env:
           JOB_ID: ${{ steps.cfg.outputs.job_id }}
-          VIDEO_URL: ${{ steps.cfg.outputs.video_url }}
+          PLATFORM: ${{ steps.cfg.outputs.platform }}
+          CONTENT_TYPE: ${{ steps.cfg.outputs.content_type }}
+          URL: ${{ steps.cfg.outputs.url }}
           DEEPSEEK_KEY: ${{ steps.cfg.outputs.deepseek_key }}
         run: python3 scripts/structure.py
