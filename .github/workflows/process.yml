@@ -1,5 +1,6 @@
-name: Process Douyin Video
+name: Process Douyin (zsks-runner)
 
+# 重活执行层：由 zsks 应用通过 repository_dispatch 触发，公开库跑无限免费 Actions
 on:
   repository_dispatch:
     types: [process]
@@ -17,11 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      HF_ENDPOINT: https://huggingface.co
-      WHISPER_MODEL: small
-      WORKERS_AI_MODEL: ${{ secrets.WORKERS_AI_MODEL || '@cf/meta/llama-3.1-8b-instruct' }}
-      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      HF_ENDPOINT: https://hf-mirror.com
+      WHISPER_MODEL: ${{ secrets.WHISPER_MODEL || 'small' }}
+      INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      DOUYIN_COOKIE: ${{ secrets.DOUYIN_COOKIE }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,33 +30,24 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Cache HF 模型
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ env.WHISPER_MODEL }}-v1
+      - name: 安装 ffmpeg 与 faster-whisper（语音转写依赖）
+        run: |
+          which ffmpeg || sudo apt-get update -y && sudo apt-get install -y ffmpeg
+          pip install --quiet faster-whisper
 
-      - name: 安装 ffmpeg
-        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
+      - name: 取 DeepSeek key（仅 job_id / 状态，不打印内容）
+        id: cfg
+        run: |
+          echo "job_id=${{ github.event.client_payload.job_id }}" >> "$GITHUB_OUTPUT"
+          echo "video_url=${{ github.event.client_payload.url }}" >> "$GITHUB_OUTPUT"
+          RESP=$(curl -s -H "Authorization: Bearer $INGEST_TOKEN" "$WORKER_URL/api/internal/config?k=deepseek_api_key")
+          KEY=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('value',''))")
+          echo "::add-mask::$KEY"
+          echo "deepseek_key=$KEY" >> "$GITHUB_OUTPUT"
 
-      - name: 安装 Python 依赖
-        run: pip install -q faster-whisper requests
-
-      - name: 下载无水印视频
-        run: bash scripts/download.sh "${{ github.event.client_payload.url || inputs.url }}" work
-
-      - name: 抽取音频
-        run: ffmpeg -y -i work/video.mp4 -vn -ac 1 -ar 16000 -f wav work/audio.wav
-
-      - name: 语音转写 (faster-whisper int8)
-        run: python scripts/transcribe.py work/audio.wav work
-
-      - name: 结构化 (Workers AI 主题/大纲/摘要)
-        run: python scripts/structure.py work/transcript.txt work
-
-      - name: 上传到 R2 + 写入 D1
+      - name: 运行消化脚本（解析→抓文案→下载→转写→结构化→回调共享库）
         env:
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          D1_NAME: ${{ secrets.D1_NAME }}
-          VIDEO_URL: ${{ github.event.client_payload.url || inputs.url }}
-        run: bash scripts/upload.sh work
+          JOB_ID: ${{ steps.cfg.outputs.job_id }}
+          VIDEO_URL: ${{ steps.cfg.outputs.video_url }}
+          DEEPSEEK_KEY: ${{ steps.cfg.outputs.deepseek_key }}
+        run: python3 scripts/structure.py
