@@ -251,7 +251,8 @@ def structure_note(caption, transcript, ocr_text, info):
   "summary": "一句话总结（30字内）",
   "outline": ["核心要点1", "核心要点2", "核心要点3"],
   "quotes": ["值得记录的金句1", "金句2"],
-  "tags": ["标签1", "标签2"]
+  "tags": ["标签1", "标签2"],
+  "category": "从该列表单选其一作为内容分类：科技数码/副业赚钱/投资理财/知识学习/生活日常/美食/旅行/健康/职场/情感/其他"
 }}
 只输出 JSON，不要任何额外说明。
 内容：
@@ -260,6 +261,10 @@ def structure_note(caption, transcript, ocr_text, info):
     note = robust_json(content)
     if not isinstance(note, dict):
         note = {}
+    # 自动分类：归一化到固定分类，无法匹配则归为「其他」
+    CATEGORIES = ["科技数码","副业赚钱","投资理财","知识学习","生活日常","美食","旅行","健康","职场","情感","其他"]
+    cat = (note.get('category') or '').strip()
+    note['category'] = cat if cat in CATEGORIES else '其他'
     # 标题：文案首行 → 摘要 → 作者
     title = (caption.split('\n')[0].strip()[:60]) or note.get('summary', '') or nickname
     return note, title
