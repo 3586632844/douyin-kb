@@ -77,6 +77,7 @@ def run():
         "url": info.get('url', '') or url,
         "title": title or info.get('nickname', '') or info.get('title', ''),
         "publish_time": int(info.get('publish_time', 0) or 0),
+        "category": note.get('category', '其他'),
         "cover": info.get('cover', '') or '',
         "play_url": info.get('play_url', '') or '',
         "desc_text": (info.get('desc') or '')[:500],
