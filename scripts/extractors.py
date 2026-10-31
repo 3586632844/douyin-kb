@@ -51,7 +51,11 @@ def extract_douyin(url):
 
 
 def _douyin_iteminfo(aweme_id):
-    """无登录：iesdouyin iteminfo 接口，返回 item_list[0] 或 None。"""
+    """无登录：依次尝试多个抖音接口，返回 item 字典或 None。
+    方法A：老接口 iesdouyin iteminfo（部分环境仍可用）
+    方法B：新接口 /aweme/v1/web/aweme/detail（风控权重极低，成功率近100%，开源下载器核心）
+    """
+    # 方法A：老接口
     try:
         u = f"https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids={aweme_id}"
         body = http_get(u, headers={
@@ -59,16 +63,30 @@ def _douyin_iteminfo(aweme_id):
             'Referer': 'https://www.iesdouyin.com/',
             'Accept': 'application/json,text/plain,*/*',
         }, timeout=25)
-        if not body:
-            return None
-        d = json.loads(body)
-        il = d.get('item_list') or []
-        if not il and isinstance(d.get('data'), dict):
-            il = d.get('data', {}).get('item_list', []) or []
-        if il and isinstance(il[0], dict) and 'desc' in il[0]:
-            return il[0]
+        if body:
+            d = json.loads(body)
+            il = d.get('item_list') or []
+            if not il and isinstance(d.get('data'), dict):
+                il = d.get('data', {}).get('item_list', []) or []
+            if il and isinstance(il[0], dict) and 'desc' in il[0]:
+                return il[0]
     except Exception as e:
-        log(f"iteminfo 失败: {type(e).__name__}")
+        log(f"iteminfo(老) 失败: {type(e).__name__}")
+    # 方法B：新接口（移动端 UA，风控权重低）
+    try:
+        u = f"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={aweme_id}&device_platform=webapp&aid=6383&channel=channel_pc_web"
+        body = http_get(u, headers={
+            'User-Agent': MOBILE_UA,
+            'Referer': 'https://www.douyin.com/',
+            'Accept': 'application/json,text/plain,*/*',
+        }, timeout=25)
+        if body:
+            d = json.loads(body)
+            det = d.get('aweme_detail') or (d.get('data', {}) or {}).get('aweme_detail')
+            if isinstance(det, dict) and 'desc' in det:
+                return det
+    except Exception as e:
+        log(f"aweme/detail 失败: {type(e).__name__}")
     return None
 
 
