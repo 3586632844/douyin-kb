@@ -15,7 +15,7 @@ URL_RE = re.compile(r'https?://[^\s，。\n]+')
 
 # ============================ 抖音 ============================
 def extract_douyin(url):
-    from common import MOBILE_UA
+    from common import MOBILE_UA, DESKTOP_UA
     url = resolve_url(url)
     if not DOUYIN_SHARE_RE.search(url):
         return None, '', []
@@ -23,30 +23,80 @@ def extract_douyin(url):
     if not aweme_id:
         return None, '', []
     log(f"douyin aweme_id={aweme_id}")
-    html = http_get(f"https://www.iesdouyin.com/share/video/{aweme_id}/", headers={
-        'Referer': 'https://www.iesdouyin.com/', 'Accept': 'text/html,*/*;q=0.8'})
-    data = _router_data(html)
-    item, kind = _find_item(data) if data else (None, None)
+
+    item = None
+    # 方法1（首选，无登录、数据中心 IP 友好）：iesdouyin iteminfo 接口
+    item = _douyin_iteminfo(aweme_id)
+    # 方法2（兜底）：分享页内联 _ROUTER_DATA
     if not item:
-        log("抖音壳页面（数据中心 IP 风控；需 DOUYIN_COOKIE 解壳）")
+        html = http_get(f"https://www.iesdouyin.com/share/video/{aweme_id}/", headers={
+            'Referer': 'https://www.iesdouyin.com/', 'Accept': 'text/html,*/*;q=0.8'})
+        data = _router_data(html) if html else None
+        item, _ = _find_item(data) if data else (None, None)
+    # 方法3（最后兜底）：yt-dlp 元数据（可能需要 Cookie）
+    if not item:
+        m = ytdlp_json(url)
+        if m:
+            item = _yt_douyin_item(m, aweme_id, url)
+
+    if not item:
+        log("抖音解析失败（IP风控/链接失效；iteminfo 与分享页均无数据）")
         return None, '', []
+
     f = _douyin_fields(item, aweme_id, url)
     caption = f['desc']
     images = f.get('images', [])
-    log(f"douyin 解析成功 kind={kind} 作者={f['nickname']} 文案长度={len(caption)}")
+    log(f"douyin 解析成功 作者={f['nickname']} 文案长度={len(caption)}")
     return f, caption, images
+
+
+def _douyin_iteminfo(aweme_id):
+    """无登录：iesdouyin iteminfo 接口，返回 item_list[0] 或 None。"""
+    try:
+        u = f"https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids={aweme_id}"
+        body = http_get(u, headers={
+            'User-Agent': DESKTOP_UA,
+            'Referer': 'https://www.iesdouyin.com/',
+            'Accept': 'application/json,text/plain,*/*',
+        }, timeout=25)
+        if not body:
+            return None
+        d = json.loads(body)
+        il = d.get('item_list') or []
+        if not il and isinstance(d.get('data'), dict):
+            il = d.get('data', {}).get('item_list', []) or []
+        if il and isinstance(il[0], dict) and 'desc' in il[0]:
+            return il[0]
+    except Exception as e:
+        log(f"iteminfo 失败: {type(e).__name__}")
+    return None
+
+
+def _yt_douyin_item(m, aweme_id, url):
+    """用 yt-dlp 元数据构造与 _douyin_fields 兼容的 item 结构。"""
+    return {
+        'desc': (m.get('description') or '').strip(),
+        'author': {'nickname': (m.get('uploader') or '').strip(),
+                   'sec_uid': str(m.get('uploader_id') or '')},
+        'create_time': int(m.get('timestamp') or 0),
+        'video': {
+            'cover': {'url_list': [m['thumbnail']]} if m.get('thumbnail') else {},
+            'play_addr': {'url_list': [m['url']]} if m.get('url') else {},
+        },
+        'image_list': [],
+        'text_extra': [],
+    }
 
 
 def _resolve_aweme_id(url):
     m = re.search(r'/video/(\d+)', url)
     if m:
         return m.group(1)
+    # 短链：跟随重定向拿最终 URL
     try:
         import urllib.request
         opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-        req = urllib.request.Request(url, headers={'User-Agent': MOBILE_UA if False else ''})
-        # 用 common 的 mobile ua
-        req.headers['User-Agent'] = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+        req = urllib.request.Request(url, headers={'User-Agent': MOBILE_UA})
         with urllib.request.urlopen(req, timeout=20) as r:
             final = r.geturl()
         m = re.search(r'/video/(\d+)', final)

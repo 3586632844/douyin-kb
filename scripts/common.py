@@ -114,6 +114,61 @@ def _ensure_wav_16k_mono(path):
         pass
 
 
+# ------------------------- 直链下载（抖音无水印 CDN 等） -------------------------
+def download_file(url, dest, referer=None, timeout=300, max_bytes=2_000_000_000):
+    """直接下载（自动跟随重定向），可选带 Referer 绕过防盗链。返回本地路径或 None。"""
+    h = {'User-Agent': MOBILE_UA, 'Accept': '*/*'}
+    if referer:
+        h['Referer'] = referer
+    req = urllib.request.Request(url, headers=h)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            total = 0
+            with open(dest, 'wb') as f:
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        log("下载超出体积上限，中止")
+                        return None
+                    f.write(chunk)
+        if not os.path.exists(dest) or os.path.getsize(dest) < 1024:
+            log(f"下载内容过小({os.path.getsize(dest) if os.path.exists(dest) else 0}字节)，疑似被拦截")
+            return None
+        return dest
+    except urllib.error.HTTPError as e:
+        log(f"下载 HTTPError={e.code}")
+        return None
+    except Exception as e:
+        log(f"下载失败: {type(e).__name__}: {e}")
+        return None
+
+
+def download_audio(url, dest_dir, referer=None):
+    """下载视频/音频到 dest_dir，抽 16k 单声道 wav 返回路径（优先直链，失败回退 yt-dlp）。"""
+    tmp = os.path.join(dest_dir, "media.mp4")
+    if download_file(url, tmp, referer=referer):
+        wav = os.path.join(dest_dir, "media.wav")
+        if _ensure_wav_16k_mono_from(tmp, wav):
+            return wav
+    # 回退：yt-dlp 直接抽音频
+    return ytdlp_download(url, dest_dir, audio_only=True)
+
+
+def _ensure_wav_16k_mono_from(src, dst):
+    if not shutil.which('ffmpeg'):
+        return False
+    try:
+        subprocess.run(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar",
+                        "16000", "-f", "wav", dst],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+        return os.path.exists(dst) and os.path.getsize(dst) > 0
+    except Exception:
+        return False
+
+
 # ------------------------- 语音转写（faster-whisper，懒加载） -------------------------
 def transcribe(audio_path, model_size=None):
     if model_size is None:
