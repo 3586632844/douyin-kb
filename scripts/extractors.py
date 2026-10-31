@@ -41,7 +41,8 @@ def extract_douyin(url):
 
     info = _parse_douyin_data(data, aweme_id, url)
     if not info:
-        log("抖音分享页有数据但解析为空（页面结构可能变化）")
+        top = list(data.keys())[:12] if isinstance(data, dict) else type(data).__name__
+        log(f"抖音解析为空 顶层键={top} aweme节点={'有' if _douyin_walk(data,'aweme') else '无'} item_list={'有' if _douyin_walk(data,'item_list') else '无'}")
         return None, '', []
     caption = info['desc']
     images = info.get('images', [])
@@ -101,8 +102,17 @@ def _douyin_extract_json(text):
 
 
 def _douyin_find_aweme(data):
+    # 与开源无水印下载器一致：优先按键名 aweme / item_list 深度搜索，再回退到含特征键的递归
     if not isinstance(data, dict):
         return None
+    r = _douyin_walk(data, "aweme")
+    if isinstance(r, dict):
+        return r
+    r = _douyin_walk(data, "item_list")
+    if isinstance(r, list) and r and isinstance(r[0], dict):
+        return r[0]
+    if any(k in data for k in ("desc", "video", "images", "aweme_id")):
+        return data
 
     def rec(o):
         if isinstance(o, dict):
@@ -119,6 +129,22 @@ def _douyin_find_aweme(data):
                     return r
         return None
     return rec(data)
+
+
+def _douyin_walk(obj, target):
+    if isinstance(obj, dict):
+        if target in obj:
+            return obj[target]
+        for v in obj.values():
+            r = _douyin_walk(v, target)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _douyin_walk(v, target)
+            if r is not None:
+                return r
+    return None
 
 
 def _douyin_first_url(node):
