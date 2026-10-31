@@ -78,17 +78,17 @@ def run():
     ctype = (os.environ.get('CONTENT_TYPE') or 'video').strip().lower()
     url = (os.environ.get('URL') or os.environ.get('VIDEO_URL') or '').strip()
     if not platform or not url:
-        fail("缺少 PLATFORM 或 URL 环境变量"); return
+        fail("缺少 PLATFORM 或 URL 环境变量", "初始化"); return
     log(f"开始消化 platform={platform} content_type={ctype}")
 
     report_progress('resolving', f"解析 {platform} 链接")
     fn = DISPATCH.get((platform, ctype)) or DISPATCH.get((platform, 'video'))
     if not fn:
-        fail(f"不支持的平台: {platform}"); return
+        fail(f"不支持的平台: {platform}", "初始化"); return
 
     info, caption, images = fn(url)
     if not info:
-        fail(f"无法解析 {platform} 内容（IP风控/链接失效；数据中心 IP 优先走无登录接口仍失败）")
+        fail(f"无法解析 {platform} 内容（IP风控/链接失效；数据中心 IP 优先走无登录接口仍失败）", "解析")
         return
 
     external_id = info.get('external_id', '') or ''

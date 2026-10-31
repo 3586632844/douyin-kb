@@ -343,9 +343,9 @@ def post_ingest(payload):
         return 0, f"URLError:{e.reason}"
 
 
-def fail(err):
+def fail(err, step='未知'):
     log(f"FAILED: {err[:200]}")
-    st, body = post_ingest({"job_id": os.environ['JOB_ID'], "ok": False, "error": err[:200]})
+    st, body = post_ingest({"job_id": os.environ['JOB_ID'], "ok": False, "error": err[:200], "step": step})
     log(f"回写失败状态 status={st}")
 
 
