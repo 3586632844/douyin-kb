@@ -66,10 +66,11 @@ def _resolve_aweme_id(url):
 def _douyin_share_page(aweme_id):
     try:
         u = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
-        body = http_get(u, headers={'User-Agent': UA_MOBILE, 'Referer': 'https://www.iesdouyin.com/'}, timeout=25)
-        if not body:
+        r = requests.get(u, headers={'User-Agent': UA_MOBILE, 'Referer': 'https://www.iesdouyin.com/'}, timeout=25)
+        if r.status_code != 200 or not r.text:
+            log(f"抖音分享页 HTTP={r.status_code} 空")
             return None
-        return _douyin_extract_json(body)
+        return _douyin_extract_json(r.text)
     except Exception as e:
         log(f"抖音分享页失败: {type(e).__name__}")
         return None
