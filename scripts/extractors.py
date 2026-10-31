@@ -38,29 +38,27 @@ def _douyin_headers(ua):
 # ============================ 抖音 ============================
 # 方案：参考开源无水印下载器（qgeng1465/douyin-watermark-free-downloader）。
 # 无需登录：短链跟随重定向拿到 aweme_id → 拉 iesdouyin 分享页 → 解析 _ROUTER_DATA / RENDER_DATA
-# → play_addr 替换 playwm→play 得到无水印地址。已在 GitHub Actions 美国 IP 实测可下载。
+# → play_addr 替换 playwm→play 得到无水印地址。
 #
-# 关键：抖音对 GitHub Azure 数据中心 IP 按区域风控（westcentralus 段 WAF 拦截返回空页，eastus 正常），
-# runner 跑在哪个区域是随机的 → 成功率不稳定。故优先把「网页抓取」这步交给 zsks Worker（Cloudflare
-# 干净出口 IP，不被抖音按区域风控），Worker 只回传页面 HTML，本地复用既有解析逻辑；Worker 不可用时
-# 再回退到 runner 本地直连（仍有概率命中被风控区域，由 ingest.js 自动换节点重试兜底）。
+# 关键结论（实测）：抖音对「数据中心 IP」一律风控——GitHub Azure 出口按区域被拦（westcentralus 空页，
+# eastus 偶通），Cloudflare Worker 出口同样被拦（返回无 _ROUTER_DATA 的风控页）。只有住宅/中国 IP 能解析。
+# 因此抖音抓取必须走 DOUYIN_PROXY（住宅/中国代理），runner 与下载统一走代理；未配代理时直接判定失败，
+# 不再无意义地重试（数据中心 IP 永远过不了抖音风控）。
+PROXY = os.environ.get('DOUYIN_PROXY') or ''
+
+
 def extract_douyin(url):
     url = resolve_url(url)
     if not DOUYIN_SHARE_RE.search(url):
         return None, '', []
-    # 优先：zsks Worker 服务端抓取（CF 干净 IP）
-    wk = _douyin_via_worker(url)
-    if wk:
-        info = _parse_douyin_data(wk, wk.get('aweme_id', ''), url)
-        if info:
-            caption = info['desc']
-            images = info.get('images', [])
-            log(f"douyin(Worker端) 解析成功 作者={info['nickname']} 文案长度={len(caption)}")
-            return info, caption, images
-        log("douyin(Worker端) HTML 已取到但解析为空，回退本地直连")
-    # 兜底：runner 本地直连（保留，作为 Worker 不可用时的退路）
+    if not PROXY:
+        log("douyin 未配置 DOUYIN_PROXY，数据中心 IP 无法解析抖音，直接失败")
+        return None, '', []
+    # 走代理：复用 Session 让重定向下发的 cookie 被分享页沿用；代理承担真实出口 IP
     s = requests.Session()
     s.headers.update({'Accept-Language': 'zh-CN,zh;q=0.9'})
+    s.proxies.update({'http': PROXY, 'https': PROXY})
+    log("douyin 启用代理出口")
     aweme_id = _resolve_aweme_id(url, s)
     if not aweme_id:
         return None, '', []
@@ -68,57 +66,13 @@ def extract_douyin(url):
 
     data = _douyin_share_page(aweme_id, s)
     if not data:
-        # 兜底：yt-dlp 元数据
+        # 兜底：yt-dlp 元数据（同样走代理）
         m = ytdlp_json(url)
         if m:
             info = _yt_douyin_item(m, aweme_id, url)
             log(f"douyin 兜底(yt-dlp) 作者={info['nickname']}")
             return info, info['desc'], []
         return None, '', []
-
-
-def _douyin_via_worker(url):
-    """经 zsks Worker（CF 干净出口 IP）抓取抖音分享页 HTML，本地解析。返回 data dict 或 None。"""
-    wk_url = os.environ.get('WORKER_URL')
-    token = os.environ.get('INGEST_TOKEN')
-    if not wk_url or not token:
-        return None
-    try:
-        import json as _json
-        body = _json.dumps({'url': url}).encode('utf-8')
-        req = urllib.request.Request(
-            wk_url.rstrip('/') + '/api/internal/dy_fetch', data=body,
-            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json',
-                     'User-Agent': 'zsks-runner'},
-            method='POST')
-        with urllib.request.urlopen(req, timeout=45) as r:
-            ctype = r.headers.get('content-type', '')
-            aweme_id = r.headers.get('x-aweme-id', '')
-            if 'text/plain' in ctype:
-                text = r.read().decode('utf-8', 'ignore')
-            else:
-                # 非纯文本（理论不会）：尝试按 JSON 解析
-                try:
-                    resp = _json.loads(r.read().decode('utf-8', 'ignore'))
-                    if not resp.get('ok'):
-                        log(f"douyin Worker端失败: {resp.get('error')}")
-                        return None
-                    text = resp.get('html') or ''
-                    aweme_id = resp.get('aweme_id') or aweme_id
-                except Exception:
-                    return None
-        if not text:
-            return None
-        data = _douyin_extract_json(text)
-        if data and _douyin_find_aweme(data):
-            if aweme_id:
-                data['aweme_id'] = aweme_id
-            return data
-        log("douyin Worker端 HTML 无 ROUTER_DATA，回退本地直连")
-        return None
-    except Exception as e:
-        log(f"douyin Worker端异常: {type(e).__name__}")
-        return None
 
     info = _parse_douyin_data(data, aweme_id, url)
     if not info:

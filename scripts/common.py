@@ -8,6 +8,9 @@ MOBILE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
 DESKTOP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
+# 抖音抓取/下载专用代理（住宅/中国 IP）。仅作用于抖音下载，不影响 DeepSeek 等 API 直连。
+PROXY = os.environ.get('DOUYIN_PROXY') or ''
+
 
 def log(msg):
     print(f"[zsks][{JOB_ID()[:8]}] {msg}", flush=True)
@@ -50,6 +53,8 @@ def ytdlp_json(url, extra=None):
     if not have_yt_dlp():
         return None
     cmd = ["yt-dlp", "--dump-json", "--no-warnings", "--skip-download"]
+    if PROXY:
+        cmd += ["--proxy", PROXY]
     if extra:
         cmd += extra
     cmd.append(url)
@@ -67,11 +72,12 @@ def ytdlp_download(url, dest_dir, audio_only=False):
     """下载到 dest_dir，返回首个产出文件路径；audio_only 时抽 16k 单声道 wav。"""
     if not have_yt_dlp():
         return None
+    proxy_args = ["--proxy", PROXY] if PROXY else []
     if audio_only:
         # 直接让 yt-dlp 抽音频为 wav
         outtmpl = os.path.join(dest_dir, "media.%(ext)s")
         cmd = ["yt-dlp", "-x", "--audio-format", "wav", "--no-warnings",
-               "-o", outtmpl, url]
+               "-o", outtmpl, url] + proxy_args
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if r.returncode != 0:
@@ -88,7 +94,7 @@ def ytdlp_download(url, dest_dir, audio_only=False):
             return None
     else:
         outtmpl = os.path.join(dest_dir, "media.%(ext)s")
-        cmd = ["yt-dlp", "--no-warnings", "-o", outtmpl, url]
+        cmd = ["yt-dlp", "--no-warnings", "-o", outtmpl, url] + proxy_args
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if r.returncode != 0:
@@ -122,7 +128,11 @@ def download_file(url, dest, referer=None, timeout=300, max_bytes=2_000_000_000)
         h['Referer'] = referer
     req = urllib.request.Request(url, headers=h)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        opener = urllib.request.build_opener()
+        if PROXY:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({'http': PROXY, 'https': PROXY}))
+        with opener.open(req, timeout=timeout) as r:
             total = 0
             with open(dest, 'wb') as f:
                 while True:
