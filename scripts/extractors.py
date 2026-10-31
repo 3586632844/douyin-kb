@@ -42,8 +42,8 @@ def _douyin_headers(ua):
 #
 # 关键结论（实测）：抖音对「数据中心 IP」一律风控——GitHub Azure 出口按区域被拦（westcentralus 空页，
 # eastus 偶通），Cloudflare Worker 出口同样被拦（返回无 _ROUTER_DATA 的风控页）。只有住宅/中国 IP 能解析。
-# 因此抖音抓取必须走 DOUYIN_PROXY（住宅/中国代理），runner 与下载统一走代理；未配代理时直接判定失败，
-# 不再无意义地重试（数据中心 IP 永远过不了抖音风控）。
+# 故优先走 DOUYIN_PROXY（住宅/中国代理）；未配代理时仍尝试直连（如本机/沙箱本身就是干净 IP 可成功），
+# 但 ingest.js 在「未配代理」时不会自动重试（数据中心 IP 直连必败，重试只是空耗 Actions 额度）。
 PROXY = os.environ.get('DOUYIN_PROXY') or ''
 
 
@@ -51,14 +51,12 @@ def extract_douyin(url):
     url = resolve_url(url)
     if not DOUYIN_SHARE_RE.search(url):
         return None, '', []
-    if not PROXY:
-        log("douyin 未配置 DOUYIN_PROXY，数据中心 IP 无法解析抖音，直接失败")
-        return None, '', []
-    # 走代理：复用 Session 让重定向下发的 cookie 被分享页沿用；代理承担真实出口 IP
+    # 走代理（若配置）：复用 Session 让重定向下发的 cookie 被分享页沿用；代理承担真实出口 IP
     s = requests.Session()
     s.headers.update({'Accept-Language': 'zh-CN,zh;q=0.9'})
-    s.proxies.update({'http': PROXY, 'https': PROXY})
-    log("douyin 启用代理出口")
+    if PROXY:
+        s.proxies.update({'http': PROXY, 'https': PROXY})
+        log("douyin 启用代理出口")
     aweme_id = _resolve_aweme_id(url, s)
     if not aweme_id:
         return None, '', []
