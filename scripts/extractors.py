@@ -15,6 +15,25 @@ URL_RE = re.compile(r'https?://[^\s，。\n]+')
 UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
 
+# UA 轮换池：抖音对数据中心 IP 间歇性风控，单 UA 连续请求易被拦；轮换 + 冷却提升命中率
+UA_POOL = [
+    UA_MOBILE,
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+]
+
+
+def _douyin_headers(ua):
+    # 浏览器化请求头（更像真实 Safari/Chrome，降低被 WAF 拦截概率）
+    return {
+        'User-Agent': ua,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+    }
+
 
 # ============================ 抖音 ============================
 # 方案：参考开源无水印下载器（qgeng1465/douyin-watermark-free-downloader）。
@@ -59,7 +78,7 @@ def _resolve_aweme_id(url, session):
     if m:
         return m.group(1)
     try:
-        r = session.get(url, headers={'User-Agent': UA_MOBILE}, allow_redirects=True, timeout=20)
+        r = session.get(url, headers=_douyin_headers(UA_POOL[0]), allow_redirects=True, timeout=20)
         log(f"抖音重定向最终URL={r.url}")
         m = re.search(r'/(?:video|slides|note)/(\d+)', r.url or url)
         if m:
@@ -71,18 +90,20 @@ def _resolve_aweme_id(url, session):
 
 def _douyin_share_page(aweme_id, session):
     # 依次尝试 iesdouyin 分享页 与 douyin.com 正规视频页（后者 _ROUTER_DATA 通常已加载数据）。
-    # 复用同一 session（含重定向下发 cookie）；仅带移动端 UA，不额外加 Referer；每个候选重试 3 次。
+    # 复用同一 session（含重定向下发 cookie）；浏览器化请求头 + UA 轮换 + 每候选重试 5 次，
+    # 间隔递增（3/6/9/12/15s）给抖音风控足够冷却时间，覆盖间歇性 WAF 拦截。
     candidates = [
         f"https://www.iesdouyin.com/share/video/{aweme_id}/",
         f"https://www.douyin.com/video/{aweme_id}/",
     ]
     for u in candidates:
-        for attempt in range(3):
+        for attempt in range(5):
+            ua = UA_POOL[attempt % len(UA_POOL)]
             try:
-                r = session.get(u, headers={'User-Agent': UA_MOBILE}, timeout=25)
+                r = session.get(u, headers=_douyin_headers(ua), timeout=25)
                 if r.status_code != 200 or not r.text:
                     log(f"抖音页面空 HTTP={r.status_code} {u[:45]} (try {attempt + 1})")
-                    time.sleep(2 * (attempt + 1))
+                    time.sleep(3 * (attempt + 1))
                     continue
                 data = _douyin_extract_json(r.text)
                 if data and _douyin_find_aweme(data):
@@ -91,7 +112,7 @@ def _douyin_share_page(aweme_id, session):
                 log(f"抖音页面无数据(可能errors) {u[:40]} top_keys={top} (try {attempt + 1})")
             except Exception as e:
                 log(f"抖音分享页失败({u[:40]}): {type(e).__name__} (try {attempt + 1})")
-            time.sleep(2 * (attempt + 1))
+            time.sleep(3 * (attempt + 1))
     return None
 
 
