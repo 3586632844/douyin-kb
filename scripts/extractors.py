@@ -41,6 +41,7 @@ def extract_douyin(url):
 
     info = _parse_douyin_data(data, aweme_id, url)
     if not info:
+        log("抖音分享页有数据但解析为空（页面结构可能变化）")
         return None, '', []
     caption = info['desc']
     images = info.get('images', [])
@@ -77,8 +78,8 @@ def _douyin_share_page(aweme_id):
 
 
 def _douyin_extract_json(text):
-    # 优先 _ROUTER_DATA（非贪婪到 </script>），其次 RENDER_DATA（URL 编码），最后兜底整段
-    m = re.search(r"window\._ROUTER_DATA\s*=\s*(\{.*?\})\s*;</script>", text, re.S)
+    # 与开源无水印下载器一致：_ROUTER_DATA（;? 兼容有无分号） → RENDER_DATA（URL 编码） → 兜底整段
+    m = re.search(r"window\._ROUTER_DATA\s*=\s*(\{.*?\});?\s*</script>", text, re.S)
     if m:
         try:
             return json.loads(m.group(1))
