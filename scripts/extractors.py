@@ -57,6 +57,7 @@ def _resolve_aweme_id(url):
     try:
         s = requests.Session()
         r = s.get(url, headers={'User-Agent': UA_MOBILE}, allow_redirects=True, timeout=20)
+        log(f"抖音重定向最终URL={r.url}")
         m = re.search(r'/(?:video|slides|note)/(\d+)', r.url or url)
         if m:
             return m.group(1)
@@ -66,16 +67,24 @@ def _resolve_aweme_id(url):
 
 
 def _douyin_share_page(aweme_id):
-    try:
-        u = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
-        r = requests.get(u, headers={'User-Agent': UA_MOBILE, 'Referer': 'https://www.iesdouyin.com/'}, timeout=25)
-        if r.status_code != 200 or not r.text:
-            log(f"抖音分享页 HTTP={r.status_code} 空")
-            return None
-        return _douyin_extract_json(r.text)
-    except Exception as e:
-        log(f"抖音分享页失败: {type(e).__name__}")
-        return None
+    # 依次尝试 iesdouyin 分享页 与 douyin.com 正规视频页（后者 _ROUTER_DATA 通常已加载数据）
+    candidates = [
+        f"https://www.iesdouyin.com/share/video/{aweme_id}/",
+        f"https://www.douyin.com/video/{aweme_id}/",
+    ]
+    for u in candidates:
+        try:
+            r = requests.get(u, headers={'User-Agent': UA_MOBILE, 'Referer': 'https://www.douyin.com/'}, timeout=25)
+            if r.status_code != 200 or not r.text:
+                log(f"抖音页面空 HTTP={r.status_code} {u[:45]}")
+                continue
+            data = _douyin_extract_json(r.text)
+            if data and _douyin_find_aweme(data):
+                return data
+            log(f"抖音页面无数据(可能errors) {u[:45]}")
+        except Exception as e:
+            log(f"抖音分享页失败({u[:40]}): {type(e).__name__}")
+    return None
 
 
 def _douyin_extract_json(text):
