@@ -3,7 +3,7 @@
 # info: {platform, external_id, url, title, publish_time, cover, play_url, nickname, uid, kind}
 # caption: 作者文案(视频) 或 图文正文；images: 图片 URL 列表（图文类）
 # 铁律：日志只打状态/摘要，不打印正文或文案。
-import os, re, json, requests, urllib.parse
+import os, re, json, time, requests, urllib.parse
 from common import log, http_get, ytdlp_json, resolve_url
 
 DOUYIN_SHARE_RE = re.compile(r'v\.douyin\.com|douyin\.com|douyin\.cn|iesdouyin\.com')
@@ -24,12 +24,16 @@ def extract_douyin(url):
     url = resolve_url(url)
     if not DOUYIN_SHARE_RE.search(url):
         return None, '', []
-    aweme_id = _resolve_aweme_id(url)
+    # 关键：复用一个 Session，让重定向下发的 cookie(ttwid/odin_tt/sid_tt) 被分享页请求沿用
+    # （开源无水印下载器即依赖此；不带这些 cookie 时 iesdouyin 分享页会返回 errors 空数据）
+    s = requests.Session()
+    s.headers.update({'Accept-Language': 'zh-CN,zh;q=0.9'})
+    aweme_id = _resolve_aweme_id(url, s)
     if not aweme_id:
         return None, '', []
     log(f"douyin aweme_id={aweme_id}")
 
-    data = _douyin_share_page(aweme_id)
+    data = _douyin_share_page(aweme_id, s)
     if not data:
         # 兜底：yt-dlp 元数据
         m = ytdlp_json(url)
@@ -50,13 +54,12 @@ def extract_douyin(url):
     return info, caption, images
 
 
-def _resolve_aweme_id(url):
+def _resolve_aweme_id(url, session):
     m = re.search(r'/(?:video|slides|note)/(\d+)', url)
     if m:
         return m.group(1)
     try:
-        s = requests.Session()
-        r = s.get(url, headers={'User-Agent': UA_MOBILE}, allow_redirects=True, timeout=20)
+        r = session.get(url, headers={'User-Agent': UA_MOBILE}, allow_redirects=True, timeout=20)
         log(f"抖音重定向最终URL={r.url}")
         m = re.search(r'/(?:video|slides|note)/(\d+)', r.url or url)
         if m:
@@ -66,24 +69,29 @@ def _resolve_aweme_id(url):
     return None
 
 
-def _douyin_share_page(aweme_id):
-    # 依次尝试 iesdouyin 分享页 与 douyin.com 正规视频页（后者 _ROUTER_DATA 通常已加载数据）
+def _douyin_share_page(aweme_id, session):
+    # 依次尝试 iesdouyin 分享页 与 douyin.com 正规视频页（后者 _ROUTER_DATA 通常已加载数据）。
+    # 复用同一 session（含重定向下发 cookie）；仅带移动端 UA，不额外加 Referer；每个候选重试 3 次。
     candidates = [
         f"https://www.iesdouyin.com/share/video/{aweme_id}/",
         f"https://www.douyin.com/video/{aweme_id}/",
     ]
     for u in candidates:
-        try:
-            r = requests.get(u, headers={'User-Agent': UA_MOBILE, 'Referer': 'https://www.douyin.com/'}, timeout=25)
-            if r.status_code != 200 or not r.text:
-                log(f"抖音页面空 HTTP={r.status_code} {u[:45]}")
-                continue
-            data = _douyin_extract_json(r.text)
-            if data and _douyin_find_aweme(data):
-                return data
-            log(f"抖音页面无数据(可能errors) {u[:45]}")
-        except Exception as e:
-            log(f"抖音分享页失败({u[:40]}): {type(e).__name__}")
+        for attempt in range(3):
+            try:
+                r = session.get(u, headers={'User-Agent': UA_MOBILE}, timeout=25)
+                if r.status_code != 200 or not r.text:
+                    log(f"抖音页面空 HTTP={r.status_code} {u[:45]} (try {attempt + 1})")
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                data = _douyin_extract_json(r.text)
+                if data and _douyin_find_aweme(data):
+                    return data
+                top = list(data.keys())[:12] if isinstance(data, dict) else type(data).__name__
+                log(f"抖音页面无数据(可能errors) {u[:40]} top_keys={top} (try {attempt + 1})")
+            except Exception as e:
+                log(f"抖音分享页失败({u[:40]}): {type(e).__name__} (try {attempt + 1})")
+            time.sleep(2 * (attempt + 1))
     return None
 
 
