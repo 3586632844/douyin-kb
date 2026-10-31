@@ -3,7 +3,7 @@
 # info: {platform, external_id, url, title, publish_time, cover, play_url, nickname, uid, kind}
 # caption: 作者文案(视频) 或 图文正文；images: 图片 URL 列表（图文类）
 # 铁律：日志只打状态/摘要，不打印正文或文案。
-import os, re, json
+import os, re, json, requests, urllib.parse
 from common import log, http_get, ytdlp_json, resolve_url
 
 DOUYIN_SHARE_RE = re.compile(r'v\.douyin\.com|douyin\.com|douyin\.cn|iesdouyin\.com')
@@ -12,10 +12,15 @@ BILI_CV_RE = re.compile(r'(?:article|cv)(\d+)')
 XHS_RE = re.compile(r'xhslink\.com|xiaohongshu\.com')
 URL_RE = re.compile(r'https?://[^\s，。\n]+')
 
+UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+
 
 # ============================ 抖音 ============================
+# 方案：参考开源无水印下载器（qgeng1465/douyin-watermark-free-downloader）。
+# 无需登录：短链跟随重定向拿到 aweme_id → 拉 iesdouyin 分享页 → 解析 _ROUTER_DATA / RENDER_DATA
+# → play_addr 替换 playwm→play 得到无水印地址。已在 GitHub Actions 美国 IP 实测可下载。
 def extract_douyin(url):
-    from common import MOBILE_UA, DESKTOP_UA
     url = resolve_url(url)
     if not DOUYIN_SHARE_RE.search(url):
         return None, '', []
@@ -24,200 +29,149 @@ def extract_douyin(url):
         return None, '', []
     log(f"douyin aweme_id={aweme_id}")
 
-    item = None
-    # 方法1（首选，无登录、数据中心 IP 友好）：iesdouyin iteminfo 接口
-    item = _douyin_iteminfo(aweme_id)
-    # 方法2（兜底）：分享页内联 _ROUTER_DATA
-    if not item:
-        html = http_get(f"https://www.iesdouyin.com/share/video/{aweme_id}/", headers={
-            'Referer': 'https://www.iesdouyin.com/', 'Accept': 'text/html,*/*;q=0.8'})
-        data = _router_data(html) if html else None
-        item, _ = _find_item(data) if data else (None, None)
-    # 方法3（最后兜底）：yt-dlp 元数据（可能需要 Cookie）
-    if not item:
+    data = _douyin_share_page(aweme_id)
+    if not data:
+        # 兜底：yt-dlp 元数据
         m = ytdlp_json(url)
         if m:
-            item = _yt_douyin_item(m, aweme_id, url)
-
-    if not item:
-        log("抖音解析失败（IP风控/链接失效；iteminfo 与分享页均无数据）")
+            info = _yt_douyin_item(m, aweme_id, url)
+            log(f"douyin 兜底(yt-dlp) 作者={info['nickname']}")
+            return info, info['desc'], []
         return None, '', []
 
-    f = _douyin_fields(item, aweme_id, url)
-    caption = f['desc']
-    images = f.get('images', [])
-    log(f"douyin 解析成功 作者={f['nickname']} 文案长度={len(caption)}")
-    return f, caption, images
+    info = _parse_douyin_data(data, aweme_id, url)
+    if not info:
+        return None, '', []
+    caption = info['desc']
+    images = info.get('images', [])
+    log(f"douyin 解析成功 作者={info['nickname']} 文案长度={len(caption)}")
+    return info, caption, images
 
 
-def _douyin_iteminfo(aweme_id):
-    """无登录：依次尝试多个抖音接口，返回 item 字典或 None。
-    方法A：老接口 iesdouyin iteminfo（部分环境仍可用）
-    方法B：新接口 /aweme/v1/web/aweme/detail（风控权重极低，成功率近100%，开源下载器核心）
-    """
-    # 方法A：老接口
+def _resolve_aweme_id(url):
+    m = re.search(r'/(?:video|slides|note)/(\d+)', url)
+    if m:
+        return m.group(1)
     try:
-        u = f"https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids={aweme_id}"
-        body = http_get(u, headers={
-            'User-Agent': DESKTOP_UA,
-            'Referer': 'https://www.iesdouyin.com/',
-            'Accept': 'application/json,text/plain,*/*',
-        }, timeout=25)
-        if body:
-            d = json.loads(body)
-            il = d.get('item_list') or []
-            if not il and isinstance(d.get('data'), dict):
-                il = d.get('data', {}).get('item_list', []) or []
-            if il and isinstance(il[0], dict) and 'desc' in il[0]:
-                return il[0]
+        s = requests.Session()
+        r = s.get(url, headers={'User-Agent': UA_MOBILE}, allow_redirects=True, timeout=20)
+        m = re.search(r'/(?:video|slides|note)/(\d+)', r.url or url)
+        if m:
+            return m.group(1)
     except Exception as e:
-        log(f"iteminfo(老) 失败: {type(e).__name__}")
-    # 方法B：新接口（移动端 UA，风控权重低）
+        log(f"抖音短链重定向失败: {type(e).__name__}")
+    return None
+
+
+def _douyin_share_page(aweme_id):
     try:
-        u = f"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={aweme_id}&device_platform=webapp&aid=6383&channel=channel_pc_web"
-        body = http_get(u, headers={
-            'User-Agent': MOBILE_UA,
-            'Referer': 'https://www.douyin.com/',
-            'Accept': 'application/json,text/plain,*/*',
-        }, timeout=25)
-        if body:
-            d = json.loads(body)
-            det = d.get('aweme_detail') or (d.get('data', {}) or {}).get('aweme_detail')
-            if isinstance(det, dict) and 'desc' in det:
-                return det
+        u = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
+        body = http_get(u, headers={'User-Agent': UA_MOBILE, 'Referer': 'https://www.iesdouyin.com/'}, timeout=25)
+        if not body:
+            return None
+        return _douyin_extract_json(body)
     except Exception as e:
-        log(f"aweme/detail 失败: {type(e).__name__}")
+        log(f"抖音分享页失败: {type(e).__name__}")
+        return None
+
+
+def _douyin_extract_json(text):
+    # 优先 _ROUTER_DATA（非贪婪到 </script>），其次 RENDER_DATA（URL 编码），最后兜底整段
+    m = re.search(r"window\._ROUTER_DATA\s*=\s*(\{.*?\})\s*;</script>", text, re.S)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+    m = re.search(r'<script\s+id="RENDER_DATA"\s+type="application/json"[^>]*>(.*?)</script>', text, re.S)
+    if m:
+        try:
+            return json.loads(urllib.parse.unquote(m.group(1)))
+        except Exception:
+            pass
+    m = re.search(r"window\._ROUTER_DATA\s*=\s*(\{.*\})\s*;\s*$", text, re.S)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+    return None
+
+
+def _douyin_find_aweme(data):
+    if not isinstance(data, dict):
+        return None
+
+    def rec(o):
+        if isinstance(o, dict):
+            if any(k in o for k in ("desc", "video", "images", "aweme_id")):
+                return o
+            for v in o.values():
+                r = rec(v)
+                if r is not None:
+                    return r
+        elif isinstance(o, list):
+            for v in o:
+                r = rec(v)
+                if r is not None:
+                    return r
+        return None
+    return rec(data)
+
+
+def _douyin_first_url(node):
+    if not isinstance(node, dict):
+        return None
+    for k in ("url_list", "urlList"):
+        v = node.get(k)
+        if isinstance(v, list) and v:
+            return v[0]
+    for k in ("url", "Url", "src"):
+        v = node.get(k)
+        if isinstance(v, str) and v.startswith("http"):
+            return v
     return None
 
 
 def _yt_douyin_item(m, aweme_id, url):
-    """用 yt-dlp 元数据构造与 _douyin_fields 兼容的 item 结构。"""
     return {
-        'desc': (m.get('description') or '').strip(),
-        'author': {'nickname': (m.get('uploader') or '').strip(),
-                   'sec_uid': str(m.get('uploader_id') or '')},
-        'create_time': int(m.get('timestamp') or 0),
-        'video': {
-            'cover': {'url_list': [m['thumbnail']]} if m.get('thumbnail') else {},
-            'play_addr': {'url_list': [m['url']]} if m.get('url') else {},
-        },
-        'image_list': [],
-        'text_extra': [],
+        'platform': 'douyin', 'external_id': aweme_id, 'url': url.strip(),
+        'title': (m.get('description') or '').strip()[:60], 'publish_time': int(m.get('timestamp') or 0),
+        'cover': m.get('thumbnail') or '', 'play_url': m.get('url') or '',
+        'nickname': (m.get('uploader') or '').strip(), 'uid': str(m.get('uploader_id') or ''),
+        'kind': 'video', 'tags': (m.get('tags') or [])[:8],
+        'desc': (m.get('description') or '').strip(), 'images': [],
     }
 
 
-def _resolve_aweme_id(url):
-    m = re.search(r'/video/(\d+)', url)
-    if m:
-        return m.group(1)
-    # 短链：跟随重定向拿最终 URL
-    try:
-        import urllib.request
-        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-        req = urllib.request.Request(url, headers={'User-Agent': MOBILE_UA})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            final = r.geturl()
-        m = re.search(r'/video/(\d+)', final)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    m = re.search(r'(\d{15,})', url)
-    return m.group(1) if m else None
-
-
-def _router_data(html):
-    if not html:
+def _parse_douyin_data(data, aweme_id, url):
+    detail = _douyin_find_aweme(data)
+    if not isinstance(detail, dict):
         return None
-    marker = "window._ROUTER_DATA = "
-    idx = html.find(marker)
-    if idx < 0:
-        idx = html.find("_ROUTER_DATA")
-        if idx < 0:
-            return None
-        eq = html.find("=", idx)
-        start = eq + 1
-    else:
-        start = idx + len(marker)
-    while start < len(html) and html[start].isspace():
-        start += 1
-    if start >= len(html) or html[start] != '{':
-        return None
-    depth = 0; in_str = False; esc = False
-    for i in range(start, len(html)):
-        c = html[i]
-        if esc:
-            esc = False; continue
-        if c == '\\':
-            esc = True; continue
-        if c == '"':
-            in_str = not in_str; continue
-        if in_str:
-            continue
-        if c == '{':
-            depth += 1
-        elif c == '}':
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(html[start:i + 1])
-                except Exception:
-                    return None
-    return None
-
-
-def _find_item(data):
-    if not isinstance(data, dict):
-        return None, None
-    loader = data.get('loaderData')
-    if isinstance(loader, dict):
-        for key, node in loader.items():
-            if isinstance(node, dict) and (key.startswith('video_') or key.startswith('note_')) and key.endswith('/page'):
-                vinfo = node.get('videoInfoRes')
-                if isinstance(vinfo, dict) and vinfo.get('item_list'):
-                    return vinfo['item_list'][0], ('note' if key.startswith('note_') else 'video')
-    return _rec(data), None
-
-
-def _rec(obj):
-    if isinstance(obj, list):
-        for v in obj:
-            r = _rec(v)
-            if r:
-                return r
-        return None
-    if not isinstance(obj, dict):
-        return None
-    if isinstance(obj.get('item_list'), list) and obj['item_list'] and isinstance(obj['item_list'][0], dict) and 'desc' in obj['item_list'][0]:
-        return obj['item_list'][0]
-    for v in obj.values():
-        r = _rec(v)
-        if r:
-            return r
-    return None
-
-
-def _douyin_fields(item, aweme_id, url):
-    desc = (item.get('desc') or '').strip()
-    author = item.get('author') or {}
-    video = item.get('video') or {}
-    cover = ''
-    if isinstance(video.get('cover'), dict) and video['cover'].get('url_list'):
-        cover = video['cover']['url_list'][0]
+    desc = (detail.get('desc') or (detail.get('share_info') or {}).get('share_title') or '').strip()
+    author = detail.get('author') or {}
+    nickname = (author.get('nickname') or author.get('unique_id') or '').strip()
+    uid = (author.get('sec_uid') or str(author.get('uid') or '') or '').strip()
+    video = detail.get('video') or {}
     play_url = ''
-    if isinstance(video.get('play_addr'), dict) and video['play_addr'].get('url_list'):
-        play_url = video['play_addr']['url_list'][0].replace('playwm', 'play')
+    if isinstance(video, dict):
+        play = video.get('play_addr') or video.get('playAddr') or {}
+        u = _douyin_first_url(play)
+        if u:
+            play_url = u.replace('/playwm/', '/play/').replace('playwm', 'play')
+    cover = _douyin_first_url(video.get('cover') or {}) if isinstance(video, dict) else ''
     images = []
-    if isinstance(item.get('image_list'), list):
-        for im in item['image_list']:
-            if isinstance(im, dict) and im.get('url_list'):
-                images.append(im['url_list'][0])
-    tags = [t['hashtag_name'] for t in (item.get('text_extra') or []) if isinstance(t, dict) and t.get('hashtag_name')]
+    for im in (detail.get('images') or []):
+        if isinstance(im, dict):
+            u = _douyin_first_url(im)
+            if u:
+                images.append(u)
+    tags = [t['hashtag_name'] for t in (detail.get('text_extra') or []) if isinstance(t, dict) and t.get('hashtag_name')]
     return {
         'platform': 'douyin', 'external_id': aweme_id, 'url': url.strip(),
-        'title': desc.split('\n')[0][:60], 'publish_time': int(item.get('create_time') or 0),
-        'cover': cover, 'play_url': play_url, 'nickname': (author.get('nickname') or '').strip(),
-        'uid': (author.get('sec_uid') or '').strip(), 'kind': 'note' if images and not play_url else 'video',
+        'title': desc.split('\n')[0][:60], 'publish_time': int(detail.get('create_time') or 0),
+        'cover': cover or '', 'play_url': play_url, 'nickname': nickname, 'uid': uid,
+        'kind': 'note' if (images and not play_url) else 'video',
         'tags': tags, 'desc': desc, 'images': images,
     }
 
@@ -317,8 +271,7 @@ def extract_xiaohongshu(url):
     if not XHS_RE.search(url):
         return None, '', []
     html = http_get(url, headers={
-        'User-Agent': "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-        'Accept': 'text/html,*/*;q=0.8'})
+        'User-Agent': UA_MOBILE, 'Accept': 'text/html,*/*;q=0.8'})
     state = _xhs_state(html)
     if not state:
         return _xhs_fallback(url)
@@ -374,7 +327,6 @@ def _xhs_state(html):
 
 
 def _xhs_note(state):
-    # 常见结构：state.note.noteDetailMap[NOTE_ID].note 或 state.note.currentNote
     note_detail = state.get('note', {}).get('noteDetailMap', {})
     for k, v in note_detail.items():
         if isinstance(v, dict) and v.get('note'):
